@@ -1,5 +1,5 @@
 import torch
-from zeta.nn import Unet  
+from zeta.nn.modules.unet import Unet
 
 # Initialize the U-Net model
 model = Unet(n_channels=1, n_classes=2)
@@ -13,3 +13,6 @@ y = model(x)
 # Output
 print(f"Input shape: {x.shape}")
 print(f"Output shape: {y.shape}")
+
+
+

@@ -23,6 +23,9 @@ classifiers = [
 
 [tool.poetry.dependencies]
 python = "^3.9"
+torch = "*"
+einops = "*"
+
 
 
 [tool.poetry.dev-dependencies]
