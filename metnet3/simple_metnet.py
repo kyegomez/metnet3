@@ -1,3 +1,4 @@
+from typing import Tuple
 
 import torch
 import torch.nn.functional as F
@@ -5,8 +6,8 @@ from einops import pack, rearrange, reduce, repeat, unpack
 from einops.layers.torch import Rearrange, Reduce
 from torch import einsum, nn
 from torch.nn import Module, ModuleList, Sequential
-from torchvision.models.resnet import resnet50
-from zeta.nn.modules.unet import Unet
+from zeta.nn.modules import Unet
+
 
 # helpers
 
@@ -222,7 +223,7 @@ class MaxViT(Module):
         mbconv_shrinkage_rate=0.25,
         dropout=0.1,
         channels=3,
-        num_register_tokens=4,
+        num_register_tokens=4
     ):
         super().__init__()
         assert isinstance(
@@ -379,200 +380,56 @@ class MaxViT(Module):
         return self.mlp_head(x)
 
 
-class TopographicalEmbeddingLayer(nn.Module):
-    """
-    A PyTorch layer that implements topographical embeddings.
-    """
 
-    def __init__(self, grid_size, stride, dim):
-        """
-        Initializes the topographical embedding layer.
-
-        Parameters:
-            grid_size (tuple): The size of the grid (height, width).
-            stride (int): The stride of the grid in kilometers.
-            dim (int): The dimensionality of the embeddings.
-        """
-        super().__init__()
-        self.grid_size = grid_size
-        self.stride = stride
-        self.dim = dim
-
-        # Create an embedding tensor for the grid
-        self.embeddings = nn.Parameter(torch.randn(*grid_size, dim))
-
-    def forward(self, x, coords):
-        """
-        Forward pass of the topographical embedding layer.
-
-        Parameters:
-            x (Tensor): The input tensor.
-            coords (Tensor): The coordinates for bilinear interpolation.
-
-        Returns:
-            Tensor: The output tensor with topographical embeddings added.
-        """
-        batch_size, _, height, width = x.size()
-
-        coords = coords.squeeze(1)  # Squeeze out the extra dimension if it's present
-
-        # Perform bilinear interpolation
-        topographical_embeddings = F.grid_sample(
-            self.embeddings.permute(2, 0, 1).unsqueeze(0).repeat(batch_size, 1, 1, 1),
-            coords,
-            mode="bilinear",
-            padding_mode="border",
-            align_corners=True,
+class SimpleMetNet3(nn.Module):
+    def __init__(
+        self,
+        dim: int,
+        dim_head: int ,
+        depth: Tuple[int] = (2, 2, 2, 2),
+        channels: int = None,
+        classes: int = None,
+        dropout: float = 0.1,
+        **kwargs
+    ):
+        super(SimpleMetNet3, self).__init__()
+        self.unet = Unet(
+            n_channels=channels,
+            n_classes=classes,
         )
 
-        return torch.cat((x, topographical_embeddings), dim=1)
-
-
-class ResidualBlock(nn.Module):
-    """
-    A residual block with two convolutional layers, batch normalization, and ReLU activation.
-    """
-
-    def __init__(self, in_channels, out_channels):
-        """
-        Initializes the residual block.
-
-        Parameters:
-            in_channels (int): Number of input channels.
-            out_channels (int): Number of output channels.
-        """
-        super().__init__()
-        self.conv1 = nn.Conv2d(
-            in_channels, out_channels, kernel_size=3, padding=1, bias=False
-        )
-        self.bn1 = nn.BatchNorm2d(out_channels)
-        self.relu = nn.ReLU(inplace=True)
-        self.conv2 = nn.Conv2d(
-            out_channels, out_channels, kernel_size=3, padding=1, bias=False
-        )
-        self.bn2 = nn.BatchNorm2d(out_channels)
-
-        self.downsample = (
-            nn.Sequential(
-                nn.Conv2d(in_channels, out_channels, kernel_size=1, bias=False),
-                nn.BatchNorm2d(out_channels),
-            )
-            if in_channels != out_channels
-            else None
-        )
-
-    def forward(self, x):
-        """
-        Forward pass of the residual block.
-
-        Parameters:
-            x (Tensor): The input tensor.
-
-        Returns:
-            Tensor: The output tensor of the residual block.
-        """
-        identity = x
-
-        out = self.conv1(x)
-        out = self.bn1(out)
-        out = self.relu(out)
-
-        out = self.conv2(out)
-        out = self.bn2(out)
-
-        if self.downsample is not None:
-            identity = self.downsample(x)
-
-        out += identity
-        out = self.relu(out)
-
-        return out
-
-
-class MetNet(nn.Module):
-    """
-    MetNet: A neural weather model for precipitation forecasting.
-    """
-
-    def __init__(self, dim, dim_head=32, n_channels=3, n_classes=10, **kwargs):
-        super(MetNet, self).__init__()
-        self.topo_embed = TopographicalEmbeddingLayer(
-            grid_size=(624, 624), stride=1, dim=dim
-        )
-
-        # Use the Bottleneck blocks from ResNet-50
-        self.res_blocks_high = self._make_resnet_layer()
-        self.res_blocks_low = self._make_resnet_layer()
-
-        self.unet_backbone = Unet(n_channels=n_channels, n_classes=n_classes)
-
-        # Assuming MaxViT is defined elsewhere with appropriate parameters
-        self.maxvit_blocks = MaxViT(
-            num_classes=n_classes,
+        self.maxvit = MaxViT(
+            num_classes=classes,
             dim=dim,
-            depth=(2, 2, 2, 2),
             dim_head=dim_head,
-            
+            depth=depth,
+            dropout=dropout,
+            **kwargs
         )
+    
+    def forward(
+        self,
+        img: torch.Tensor,
+    ):
+        featuress_unet = self.unet(img)
 
-        self.central_crop_768 = Rearrange(
-            "b c (h p1) (w p2) -> b c (h w) p1 p2", p1=768, p2=768
-        )
-        self.central_crop_512 = Rearrange(
-            "b c (h p1) (w p2) -> b c (h w) p1 p2", p1=512, p2=512
-        )
+        features_vit = self.maxvit(featuress_unet)
 
-        self.mlp_weather = nn.Sequential(
-            nn.Linear(768, 128),  # Example sizes, needs to be adjusted
-            nn.ReLU(),
-            nn.Linear(128, 4),  # Example sizes, needs to be adjusted
-        )
+        return features_vit
+    
 
-        self.upsample_precip = nn.UpsamplingBilinear2d(scale_factor=4)
+x = torch.randn(1, 793, 624, 624)
 
-    def _make_resnet_layer(self):
-        # Get the layers from a pre-trained ResNet-50
-        model = resnet50(pretrained=True)
-        # We take the layers except the fully connected layer
-        return nn.Sequential(*list(model.children())[:-2])
+model = SimpleMetNet3(
+    dim=64,
+    dim_head=64,
+    depth=(2, 2, 2, 2),
+    channels=793,  # Assuming this should match the input channel size, please adjust if that's not the case
+    classes=1,     # Specify the number of classes here, for binary classification it's usually 1
+    dropout=0.1,   # If you want dropout, you can uncomment this
+    # patch_size=16,  # Only uncomment and provide this if your MaxViT class uses it
+    # image_size=624, # Only uncomment and provide this if your MaxViT class uses it
+)
 
-    def forward(self, high_res_inputs, low_res_inputs, coords):
-        high_res_inputs = self.topo_embed(high_res_inputs, coords)
-
-        high_res_features = self.res_blocks_high(high_res_inputs)
-        high_res_features = F.interpolate(
-            high_res_features, scale_factor=1 / 8, mode="bilinear", align_corners=False
-        )
-
-        low_res_features = F.pad(
-            low_res_inputs, pad=(0, 0, 0, 0, 3, 3, 3, 3), mode="reflect"
-        )
-        low_res_features = self.res_blocks_low(low_res_features)
-
-        combined_features = torch.cat((high_res_features, low_res_features), dim=1)
-        features_unet = self.unet_backbone(combined_features)
-
-        features_downsampled = F.interpolate(
-            features_unet, scale_factor=1 / 2, mode="bilinear", align_corners=False
-        )
-        features_vit = self.maxvit_blocks(features_downsampled)
-
-        features_cropped_768 = self.central_crop_768(features_vit).view(
-            features_vit.size(0), -1, 768, 768
-        )
-        features_upsampled = F.interpolate(
-            features_cropped_768, scale_factor=2, mode="bilinear", align_corners=False
-        )
-
-        features_cropped_512 = self.central_crop_512(features_upsampled).view(
-            features_upsampled.size(0), -1, 512, 512
-        )
-        weather_states = self.mlp_weather(features_cropped_512.flatten(1))
-
-        precipitation = self.upsample_precip(
-            weather_states.view(weather_states.size(0), -1, 32, 32)
-        )
-
-        return precipitation
-
-
+output = model(x)
+print(output.shape)
