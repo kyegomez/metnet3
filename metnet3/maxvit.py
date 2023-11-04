@@ -379,11 +379,10 @@ class MaxViT(Module):
         return self.mlp_head(x)
 
 
+# x = torch.randn(1, 3, 224, 224)
 
-x = torch.randn(1, 3, 224, 224)
+# model = MaxViT(num_classes=1000, dim=128, depth=(2, 2, 2, 2))
 
-model = MaxViT(num_classes=1000, dim=128, depth=(2, 2, 2, 2))
+# out = model(x).shape
 
-out = model(x).shape
-
-print(out)
+# print(out)

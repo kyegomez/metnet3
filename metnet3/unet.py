@@ -13,6 +13,3 @@ y = model(x)
 # Output
 print(f"Input shape: {x.shape}")
 print(f"Output shape: {y.shape}")
-
-
-
